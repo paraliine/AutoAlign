@@ -300,6 +300,78 @@ class Llama2Strategy(RenderStrategy):
         return labels
 
 
+class NoThinkStrategy(RenderStrategy):
+    """Base for no-think strategies. Subclasses define which assistant turns get the prefix."""
+
+    def __init__(self, no_think_prefix: str):
+        self.no_think_prefix = no_think_prefix
+
+    def _needs_prefix(self, i, role, messages):
+        raise NotImplementedError
+
+    def get_conversation_str(self, messages, template_attrs, add_generation_prompt=False):
+        role_starts, role_ends = template_attrs["role_starts"], template_attrs["role_ends"]
+        ret = ""
+        for i, (role, msg) in enumerate(messages):
+            prefix = self.no_think_prefix if self._needs_prefix(i, role, messages) else ""
+            ret += role_starts[role] + prefix + msg + role_ends[role]
+        if add_generation_prompt:
+            ret += role_starts[Role.ASSISTANT] + self.no_think_prefix
+        return ret
+
+    def generate_labels(self, messages, tokenized_conversation, tokenizer, template_attrs):
+        role_starts, role_ends = template_attrs["role_starts"], template_attrs["role_ends"]
+        offset = template_attrs.get("offset", 0)
+        labels = [IGNORED_TOKEN_ID] * len(tokenized_conversation.input_ids)
+        cur = ""
+        for i, (role, msg) in enumerate(messages):
+            if role in [Role.SYSTEM, Role.HUMAN]:
+                cur += role_starts[role] + msg + role_ends[role]
+            else:
+                cur += role_starts[role]
+                if self._needs_prefix(i, role, messages):
+                    cur += self.no_think_prefix
+                start = len(tokenizer(cur).input_ids) - offset
+                end = len(tokenizer(cur + msg + role_ends[role]).input_ids)
+                labels[start:end] = tokenized_conversation.input_ids[start:end]
+                cur += msg + role_ends[role]
+        return labels
+
+
+class Qwen3NoThinkStrategy(NoThinkStrategy):
+    """Qwen3-8B no-think rule: only the very last message in the
+    conversation -- when it is an assistant turn -- receives the empty
+    `<think>\\n\\n</think>\\n\\n` prefix. All earlier assistant turns
+    (including tool-call turns interleaved with `<tool_response>` user
+    messages) get nothing.
+
+    This matches the official Qwen3-8B chat template's
+    `loop.last or (not loop.last and reasoning_content)` branch under
+    `enable_thinking=false`, where `reasoning_content` is always empty so
+    only `loop.last` survives. Note this differs from Qwen3.5, whose
+    template adds the prefix to *every* assistant turn after the last
+    real user query."""
+
+    def _needs_prefix(self, i, role, messages):
+        if role != Role.ASSISTANT:
+            return False
+        # Only the very last message of the conversation gets the prefix.
+        # In multi-turn tool-calling data, intermediate assistant turns
+        # (the ones emitting <tool_call>) must NOT receive it -- otherwise
+        # train/inference distributions diverge.
+        if i != len(messages) - 1:
+            return False
+        # Defensive: also confirm we are past the last "real" user query.
+        # In normal SFT data this is automatically true.
+        for j in range(len(messages) - 1, -1, -1):
+            r, content = messages[j]
+            if r == Role.HUMAN and not (
+                content.startswith("<tool_response>") and content.endswith("</tool_response>")
+            ):
+                return i > j
+        return True
+
+
 class InstructionGenerateConversation(Conversation):
     def swap_eos_token(self):
         temp = self.template.role_ends[Role.HUMAN]
@@ -470,7 +542,7 @@ TEMPLATES = {
         stop_str="</s>",
     ),
     "chatml-with-empty-think": ConversationTemplate(
-        name="chatml-keep-system",
+        name="chatml-with-empty-think",
         role_starts={
             Role.SYSTEM: "<|im_start|>system\n",
             Role.HUMAN: "<|im_start|>user\n",
@@ -478,11 +550,12 @@ TEMPLATES = {
         },
         role_ends={
             Role.SYSTEM: "<|im_end|>\n",
-            Role.HUMAN: "<|im_end|>\n<think>\n\n</think>\n\n",
+            Role.HUMAN: "<|im_end|>\n",
             Role.ASSISTANT: "<|im_end|>\n",
         },
         offset=0,
         stop_str="<|im_end|>",
+        strategy=Qwen3NoThinkStrategy("<think>\n\n</think>\n\n"),
     ),
     "chatml-idsys": ConversationTemplate(
         name="chatml-idsys",
@@ -500,21 +573,6 @@ TEMPLATES = {
             Chinese Information Processing Laboratory (CIP). 你是朱雀，一个由中文信息处理实验室训练的对话式人工智能助手。\
             You are to give helpful, detailed, and polite answers to the user's questions. \
             你应当为用户的问题提供有帮助的、详细的、礼貌的回答。",
-        offset=0,
-        stop_str="<|im_end|>",
-    ),
-    "chatml-with-empty-think": ConversationTemplate(
-        name="chatml-keep-system",
-        role_starts={
-            Role.SYSTEM: "<|im_start|>system\n",
-            Role.HUMAN: "<|im_start|>user\n",
-            Role.ASSISTANT: "<|im_start|>assistant\n",
-        },
-        role_ends={
-            Role.SYSTEM: "<|im_end|>\n",
-            Role.HUMAN: "<|im_end|>\n<think>\n\n</think>\n\n",
-            Role.ASSISTANT: "<|im_end|>\n",
-        },
         offset=0,
         stop_str="<|im_end|>",
     ),
