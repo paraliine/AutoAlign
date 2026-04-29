@@ -106,6 +106,22 @@ autoalign-cli dpo --model_name_or_path "Qwen/Qwen2.5-7B-Instruct"  \
             --deepspeed "configs/zero3.json"
 ```
 
+### DMPO
+
+`autoalign-cli dmpo` delegates to the official `DMPO/fastchat/train/train_dmpo_efficient.py` implementation.
+It only accepts the official DMPO multi-turn preference format, where `prompt`, `chosen`, and `rejected` are message lists.
+
+```bash
+autoalign-cli dmpo --model_name_or_path "/path/to/sft_model" \
+            --ref_model_name_or_path "/path/to/sft_model" \
+            --data_path "/path/to/dmpo_preference.json" \
+            --bf16 True \
+            --output_dir "saved_models/dmpo-model" \
+            --beta 0.1 \
+            --gamma 0.7 \
+            --deepspeed "configs/zero3.json"
+```
+
 ### Megatron-based Training
 For detailed scripts configuration, please refer to the [megatron.md](docs/megatron.md).
 1. Setup the environment:

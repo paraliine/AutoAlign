@@ -17,6 +17,7 @@ logger = get_logger(__name__)
 class Command(str, Enum):
     SFT = "sft"
     DPO = "dpo"
+    DMPO = "dmpo"
     SSO = "sso"
     REWARD = "rm"
     DATA = "data"
@@ -296,6 +297,10 @@ def main():
         from .train import dpo
 
         run_distributed_task(dpo.__file__, remaining_args)
+    elif args.command == Command.DMPO:
+        from .train import dmpo
+
+        run_distributed_task(dmpo.__file__, remaining_args)
     elif args.command == Command.SSO:
         from .train import sso
 
